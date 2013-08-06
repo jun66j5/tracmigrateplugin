@@ -25,13 +25,14 @@ class TracMigrationCommand(Component):
                        for section in self.config.sections()
                        for name, value in self.config.options(section)
                        if section != 'trac' or name != 'database')
+        env = Environment(env_path, create=True, options=options)
+        env.upgrade()
+        env.config.save() # remove comments
+
         src_db = self.env.get_read_db()
         src_cursor = src_db.cursor()
         src_tables = set(self._get_tables(self.config.get('trac', 'database'),
                                           src_cursor))
-        env = Environment(env_path, create=True, options=options)
-        env.upgrade()
-        env.config.save() # remove comments
 
         db = env.get_read_db()
         cursor = db.cursor()
