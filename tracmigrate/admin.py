@@ -54,13 +54,18 @@ class TracMigrationCommand(Component):
 
         self._printout('Copying tables:')
         for table in tables:
-            if table == 'system':
-                continue
-
             @env.with_transaction()
             def copy(db):
                 cursor = db.cursor()
                 self._printout('  %s table... ', table, newline=False)
+                if table == 'system':
+                    src_cursor.execute("SELECT value FROM system "
+                                       "WHERE name='initial_database_version'")
+                    row = src_cursor.fetchone()
+                    cursor.execute("UPDATE system SET value=%s WHERE "
+                                   "name='initial_database_version'", row)
+                    self._printout("copied 'initial_database_version' value.")
+                    return
                 src_cursor.execute('SELECT * FROM ' + src_db.quote(table))
                 columns = get_column_names(src_cursor)
                 query = 'INSERT INTO ' + db.quote(table) + \
