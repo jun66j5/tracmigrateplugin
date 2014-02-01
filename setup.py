@@ -7,7 +7,7 @@ extra = {}
 
 setup(
     name = 'TracMigratePlugin',
-    version = '0.12.0.2',
+    version = '0.12.0.3',
     description = '',
     license = 'BSD', # the same as Trac
     url = 'http://trac-hacks.org/wiki/TracMigratePlugin',
