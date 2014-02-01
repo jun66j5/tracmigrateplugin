@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import sys
 
 from trac.core import Component, implements, TracError
 from trac.admin.api import IAdminCommandProvider, get_dir_list
@@ -25,8 +26,8 @@ class TracMigrationCommand(Component):
         except OSError:
             pass
         if os.path.exists(env_path) or os.path.lexists(env_path):
-            printerr('Cannot create Trac environment: %s: File exists' %
-                     env_path)
+            self._printerr('Cannot create Trac environment: %s: File exists',
+                           env_path)
             return 1
 
         options = [('trac', 'database', dburi)]
@@ -49,8 +50,9 @@ class TracMigrationCommand(Component):
         tables = sorted(tables & src_tables)
         sequences = set(self._get_sequences(dburi, cursor, tables))
         directories = self._get_directories(src_db)
+        progress = self._isatty()
 
-        printout('Copying tables:')
+        self._printout('Copying tables:')
         for table in tables:
             if table == 'system':
                 continue
@@ -58,7 +60,7 @@ class TracMigrationCommand(Component):
             @env.with_transaction()
             def copy(db):
                 cursor = db.cursor()
-                printout('  %s table... ' % table, newline=False)
+                self._printout('  %s table... ', table, newline=False)
                 src_cursor.execute('SELECT * FROM ' + src_db.quote(table))
                 columns = get_column_names(src_cursor)
                 query = 'INSERT INTO ' + db.quote(table) + \
@@ -72,21 +74,24 @@ class TracMigrationCommand(Component):
                         break
                     cursor.executemany(query, rows)
                     count += len(rows)
-                printout('%d records.' % count)
+                    if progress:
+                        self._printout('%d records.\r  %s table... ',
+                                       count, table, newline=False)
+                self._printout('%d records.', count)
 
             if table in sequences:
                 db.update_sequence(cursor, table)
 
-        printout('Copying directories:')
+        self._printout('Copying directories:')
         for name in directories:
-            printout('  %s directory... ' % name, newline=False)
+            self._printout('  %s directory... ', name, newline=False)
             src = os.path.join(self.env.path, name)
             dst = os.path.join(env.path, name)
             if os.path.isdir(dst):
                 shutil.rmtree(dst)
             if os.path.isdir(src):
                 shutil.copytree(src, dst)
-            printout('done.')
+            self._printout('done.')
 
     def _complete_migrate(self, args):
         if len(args) == 1:
@@ -120,3 +125,18 @@ class TracMigrationCommand(Component):
         version = self.env.get_version(db=db)
         path = ('attachments', 'files')[version >= 28]
         return (path, 'htdocs', 'templates', 'plugins')
+
+    def _printout(self, message, *args, **kwargs):
+        if args:
+            message %= args
+        printout(message, **kwargs)
+        sys.stdout.flush()
+
+    def _printerr(self, message, *args, **kwargs):
+        if args:
+            message %= args
+        printerr(message, **kwargs)
+        sys.stderr.flush()
+
+    def _isatty(self):
+        return sys.stdout.isatty() and sys.stderr.isatty()
