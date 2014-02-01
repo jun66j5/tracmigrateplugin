@@ -7,7 +7,7 @@ from trac.core import Component, implements, TracError
 from trac.admin.api import IAdminCommandProvider, get_dir_list
 from trac.db.api import get_column_names
 from trac.env import Environment
-from trac.util.text import printout
+from trac.util.text import printerr, printout
 
 
 class TracMigrationCommand(Component):
@@ -15,12 +15,21 @@ class TracMigrationCommand(Component):
     implements(IAdminCommandProvider)
 
     def get_admin_commands(self):
-        yield ('migrate', '<dir> <dburl>',
+        yield ('migrate', '<tracenv> <dburi>',
                'Migrate to new environment and another database',
                self._complete_migrate, self._do_migrate)
 
-    def _do_migrate(self, env_path, dburl):
-        options = [('trac', 'database', dburl)]
+    def _do_migrate(self, env_path, dburi):
+        try:
+            os.rmdir(env_path)  # remove directory if it's empty
+        except OSError:
+            pass
+        if os.path.exists(env_path) or os.path.lexists(env_path):
+            printerr('Cannot create Trac environment: %s: File exists' %
+                     env_path)
+            return 1
+
+        options = [('trac', 'database', dburi)]
         options.extend((section, name, value)
                        for section in self.config.sections()
                        for name, value in self.config.options(section)
@@ -36,9 +45,9 @@ class TracMigrationCommand(Component):
 
         db = env.get_read_db()
         cursor = db.cursor()
-        tables = set(self._get_tables(dburl, cursor))
+        tables = set(self._get_tables(dburi, cursor))
         tables = sorted(tables & src_tables)
-        sequences = set(self._get_sequences(dburl, cursor, tables))
+        sequences = set(self._get_sequences(dburi, cursor, tables))
         directories = self._get_directories(src_db)
 
         printout('Copying tables:')
@@ -83,22 +92,22 @@ class TracMigrationCommand(Component):
         if len(args) == 1:
             return get_dir_list(args[0])
 
-    def _get_tables(self, dburl, cursor):
-        if dburl.startswith('sqlite:'):
+    def _get_tables(self, dburi, cursor):
+        if dburi.startswith('sqlite:'):
             query = "SELECT name FROM sqlite_master" \
                     " WHERE type='table' AND NOT name='sqlite_sequence'"
-        elif dburl.startswith('postgres:'):
+        elif dburi.startswith('postgres:'):
             query = "SELECT tablename FROM pg_tables" \
                     " WHERE schemaname = ANY (current_schemas(false))"
-        elif dburl.startswith('mysql:'):
+        elif dburi.startswith('mysql:'):
             query = "SHOW TABLES"
         else:
-            raise TracError('Unsupported %s database' % dburl.split(':')[0])
+            raise TracError('Unsupported %s database' % dburi.split(':')[0])
         cursor.execute(query)
         return sorted([row[0] for row in cursor])
 
-    def _get_sequences(self, dburl, cursor, tables):
-        if dburl.startswith('postgres:'):
+    def _get_sequences(self, dburi, cursor, tables):
+        if dburi.startswith('postgres:'):
             tables = set(tables)
             cursor.execute(
                 r"SELECT relname FROM pg_class "
