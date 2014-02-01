@@ -16,18 +16,18 @@ Examples:
 
 
 def main(args):
+    if len(args) != 3:
+        print >>sys.stderr, _usage()
+        return 127
+    source, dest, dburi = args
+
     try:
         from trac.env import Environment
         from tracmigrate.admin import TracMigrationCommand
     except ImportError, e:
         print >>sys.stderr, 'Requires trac and tracmigrateplugin: %s' % \
                             unicode(e)
-        return 127
-
-    if len(args) != 3:
-        print >>sys.stderr, _usage()
         return 126
-    source, dest, dburi = args
 
     env = Environment(source)
     if env.needs_upgrade():
