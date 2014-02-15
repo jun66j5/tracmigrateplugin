@@ -47,13 +47,15 @@ class TracMigrationCommand(Component):
         env.upgrade()
         env.config.save()  # remove comments
 
+        src_dburi = self.config.get('trac', 'database')
         src_db = self.env.get_read_db()
         dst_db = env.get_db_cnx()
-        self._copy_tables(src_db, dst_db, dburi)
+        self._copy_tables(src_db, dst_db, src_dburi, dburi)
         self._copy_directories(src_db, env)
 
     def _do_migrate_inplace(self, dburi):
-        if self.config.get('trac', 'database') == dburi:
+        src_dburi = self.config.get('trac', 'database')
+        if src_dburi == dburi:
             self._printerr('Source database and destination database are '
                            'same: %s', dburi)
             return 1
@@ -64,10 +66,9 @@ class TracMigrationCommand(Component):
         self.config.set('trac', 'database', dburi)
         dbmgr = DatabaseManager(self.env)
         connector, args = dbmgr.get_connector()
-        if dburi.startswith('sqlite:'):
-            connector.init_db(**args)  # create sqlite database and tables
+        connector.init_db(**args)
         dst_db = connector.get_connection(**args)
-        self._copy_tables(src_db, dst_db, dburi, inplace=True)
+        self._copy_tables(src_db, dst_db, src_dburi, dburi, inplace=True)
         self.config.save()
 
     def _backup_file(self, src):
@@ -77,12 +78,11 @@ class TracMigrationCommand(Component):
         self._printout('Back up %s to %s in %s.', basename(src),
                        basename(dst), os.path.dirname(dst))
 
-    def _copy_tables(self, src_db, dst_db, dburi, inplace=False):
+    def _copy_tables(self, src_db, dst_db, src_dburi, dburi, inplace=False):
         self._printout('Copying tables:')
 
         src_cursor = src_db.cursor()
-        src_tables = set(self._get_tables(self.config.get('trac', 'database'),
-                                          src_cursor))
+        src_tables = set(self._get_tables(src_dburi, src_cursor))
         cursor = dst_db.cursor()
         tables = set(self._get_tables(dburi, cursor))
         tables = sorted(tables & src_tables)
