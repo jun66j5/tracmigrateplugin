@@ -67,7 +67,7 @@ class TracMigrationCommand(Component):
         if dburi.startswith('sqlite:'):
             connector.init_db(**args)  # create sqlite database and tables
         dst_db = connector.get_connection(**args)
-        self._copy_tables(src_db, dst_db, dburi)
+        self._copy_tables(src_db, dst_db, dburi, inplace=True)
         self.config.save()
 
     def _backup_file(self, src):
@@ -77,7 +77,7 @@ class TracMigrationCommand(Component):
         self._printout('Back up %s to %s in %s.', basename(src),
                        basename(dst), os.path.dirname(dst))
 
-    def _copy_tables(self, src_db, dst_db, dburi):
+    def _copy_tables(self, src_db, dst_db, dburi, inplace=False):
         self._printout('Copying tables:')
 
         src_cursor = src_db.cursor()
@@ -98,7 +98,7 @@ class TracMigrationCommand(Component):
                     raise AssertionError('db is not dst_db')
                 cursor = db.cursor()
                 self._printout('  %s table... ', table, newline=False)
-                if table == 'system':
+                if table == 'system' and not inplace:
                     src_cursor.execute("SELECT value FROM system "
                                        "WHERE name='initial_database_version'")
                     row = src_cursor.fetchone()
