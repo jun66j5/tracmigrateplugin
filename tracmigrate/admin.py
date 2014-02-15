@@ -4,10 +4,11 @@ import os
 import shutil
 import sys
 import time
+from tempfile import mkdtemp
 
 from trac.core import Component, implements, TracError
 from trac.admin.api import IAdminCommandProvider, get_dir_list
-from trac.db.api import DatabaseManager, get_column_names
+from trac.db.api import get_column_names, _parse_db_str
 from trac.env import Environment
 from trac.util.text import printerr, printout
 
@@ -38,15 +39,7 @@ class TracMigrationCommand(Component):
                            env_path)
             return 1
 
-        options = [('trac', 'database', dburi)]
-        options.extend((section, name, value)
-                       for section in self.config.sections()
-                       for name, value in self.config.options(section)
-                       if section != 'trac' or name != 'database')
-        env = Environment(env_path, create=True, options=options)
-        env.upgrade()
-        env.config.save()  # remove comments
-
+        env = self._create_env(env_path, dburi)
         src_dburi = self.config.get('trac', 'database')
         src_db = self.env.get_read_db()
         dst_db = env.get_db_cnx()
@@ -60,23 +53,45 @@ class TracMigrationCommand(Component):
                            'same: %s', dburi)
             return 1
 
-        self._backup_file(self.config.filename)
-        src_db = self.env.get_read_db()
+        env_path = mkdtemp(prefix='migrate-',
+                           dir=os.path.dirname(self.env.path))
+        try:
+            env = self._create_env(env_path, dburi)
+            src_db = self.env.get_read_db()
+            dst_db = env.get_db_cnx()
+            self._copy_tables(src_db, dst_db, src_dburi, dburi, inplace=True)
+            env.shutdown()
+            env = None
+            if dburi.startswith('sqlite:'):
+                schema, params = _parse_db_str(dburi)
+                shutil.copy(os.path.join(env_path, params['path']),
+                            os.path.join(self.env.path, params['path']))
+        finally:
+            shutil.rmtree(env_path)
 
+        self._backup_tracini(self.env)
         self.config.set('trac', 'database', dburi)
-        dbmgr = DatabaseManager(self.env)
-        connector, args = dbmgr.get_connector()
-        connector.init_db(**args)
-        dst_db = connector.get_connection(**args)
-        self._copy_tables(src_db, dst_db, src_dburi, dburi, inplace=True)
         self.config.save()
 
-    def _backup_file(self, src):
+    def _backup_tracini(self, env):
+        dir = env.path
+        src = env.config.filename
         basename = os.path.basename
         dst = src + '.migrate-%d' % int(time.time())
         shutil.copyfile(src, dst)
-        self._printout('Back up %s to %s in %s.', basename(src),
-                       basename(dst), os.path.dirname(dst))
+        self._printout('Back up conf/%s to conf/%s in %s.', basename(src),
+                       basename(dst), dir)
+
+    def _create_env(self, env_path, dburi):
+        options = [('trac', 'database', dburi)]
+        options.extend((section, name, value)
+                       for section in self.config.sections()
+                       for name, value in self.config.options(section)
+                       if section != 'trac' or name != 'database')
+        env = Environment(env_path, create=True, options=options)
+        env.upgrade()
+        env.config.save()  # remove comments
+        return env
 
     def _copy_tables(self, src_db, dst_db, src_dburi, dburi, inplace=False):
         self._printout('Copying tables:')
