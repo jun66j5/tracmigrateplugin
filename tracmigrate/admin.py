@@ -99,14 +99,13 @@ class TracMigrationCommand(Component):
         src_cursor = src_db.cursor()
         src_tables = set(self._get_tables(src_dburi, src_cursor))
         cursor = dst_db.cursor()
-        tables = set(self._get_tables(dburi, cursor))
-        tables = sorted(tables & src_tables)
+        tables = set(self._get_tables(dburi, cursor)) & src_tables
         sequences = set(self._get_sequences(dburi, cursor, tables))
         progress = self._isatty()
 
-        for table in tables:
-            @self._with_transaction(dst_db)
-            def copy(db):
+        @self._with_transaction(dst_db)
+        def copy(db):
+            for table in sorted(tables):
                 if db is src_db:
                     raise AssertionError('db is src_db')
                 if db is not dst_db:
@@ -137,9 +136,9 @@ class TracMigrationCommand(Component):
                     if progress:
                         self._printout('%d records.\r  %s table... ',
                                        count, table, newline=False)
-                if table in sequences:
-                    db.update_sequence(cursor, table)
                 self._printout('%d records.', count)
+            for table in tables & sequences:
+                db.update_sequence(cursor, table)
 
     def _copy_directories(self, src_db, env):
         self._printout('Copying directories:')
