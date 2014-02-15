@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
 import shutil
 import sys
 import time
@@ -102,6 +103,7 @@ class TracMigrationCommand(Component):
         tables = set(self._get_tables(dburi, cursor)) & src_tables
         sequences = set(self._get_sequences(dburi, cursor, tables))
         progress = self._isatty()
+        replace_cast = self._get_replace_cast(src_db, dst_db, src_dburi, dburi)
 
         @self._with_transaction(dst_db)
         def copy(db):
@@ -131,14 +133,42 @@ class TracMigrationCommand(Component):
                     rows = src_cursor.fetchmany(100)
                     if not rows:
                         break
-                    cursor.executemany(query, rows)
                     count += len(rows)
                     if progress:
                         self._printout('%d records.\r  %s table... ',
                                        count, table, newline=False)
+                    if replace_cast is not None and table == 'report':
+                        rows = self._replace_report_query(rows, columns,
+                                                          replace_cast)
+                    cursor.executemany(query, rows)
                 self._printout('%d records.', count)
             for table in tables & sequences:
                 db.update_sequence(cursor, table)
+
+    def _get_replace_cast(self, src_db, dst_db, src_dburi, dst_dburi):
+        if src_dburi.split(':', 1) == dst_dburi.split(':', 1):
+            return None
+
+        type_re = re.compile(r' AS ([^)]+)')
+        def cast_type(db, type):
+            match = type_re.search(db.cast('name', type))
+            return match.group(1)
+
+        type_maps = dict(filter(lambda (src, dst): src != dst.lower(),
+                                ((cast_type(src_db, t).lower(),
+                                  cast_type(dst_db, t))
+                                 for t in ('text', 'int', 'int64'))))
+        if not type_maps:
+            return None
+
+        cast_re = re.compile(r'\bCAST\(\s*([^\s)]+)\s+AS\s+(%s)\s*\)' %
+                             '|'.join(type_maps), re.IGNORECASE)
+        def replace(match):
+            name, type = match.groups()
+            return 'CAST(%s AS %s)' % (name, type_maps.get(type.lower(), type))
+        def replace_cast(text):
+            return cast_re.sub(replace, text)
+        return replace_cast
 
     def _copy_directories(self, src_db, env):
         self._printout('Copying directories:')
@@ -152,6 +182,14 @@ class TracMigrationCommand(Component):
             if os.path.isdir(src):
                 shutil.copytree(src, dst)
             self._printout('done.')
+
+    def _replace_report_query(self, rows, columns, replace_cast):
+        idx = columns.index('query')
+        def replace(row):
+            row = list(row)
+            row[idx] = replace_cast(row[idx])
+            return row
+        return [replace(row) for row in rows]
 
     def _with_transaction(self, db):
         def wrapper(fn):
