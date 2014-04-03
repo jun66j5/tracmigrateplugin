@@ -62,6 +62,8 @@ class TracMigrationCommand(Component):
             src_db = self.env.get_read_db()
             dst_db = env.get_db_cnx()
             self._copy_tables(src_db, dst_db, src_dburi, dburi, inplace=True)
+            del src_db
+            del dst_db
             env.shutdown()
             env = None
             if dburi.startswith('sqlite:'):
