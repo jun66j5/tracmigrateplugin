@@ -121,7 +121,7 @@ class TracMigrationCommand(Component):
                     cursor.execute("UPDATE system SET value=%s WHERE "
                                    "name='initial_database_version'", row)
                     self._printout("copied 'initial_database_version' value.")
-                    return
+                    continue
                 src_cursor.execute('SELECT * FROM ' + src_db.quote(table))
                 columns = get_column_names(src_cursor)
                 query = 'INSERT INTO ' + db.quote(table) + \
