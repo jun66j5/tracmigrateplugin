@@ -11,6 +11,7 @@ from trac.core import Component, implements, TracError
 from trac.admin.api import IAdminCommandProvider, get_dir_list
 from trac.db.api import get_column_names, _parse_db_str
 from trac.env import Environment
+from trac.util.compat import any
 from trac.util.text import printerr, printout
 
 
@@ -85,14 +86,31 @@ class TracMigrationCommand(Component):
 
     def _create_env(self, env_path, dburi):
         options = [('trac', 'database', dburi)]
-        options.extend((section, name, value)
-                       for section in self.config.sections()
-                       for name, value in self.config.options(section)
-                       if section != 'trac' or name != 'database')
+        plugins = []
+        for section in self.config.sections():
+            for name, value in self.config.options(section):
+                if section == 'trac' or name == 'database':
+                    continue
+                entry = (section, name, value)
+                if section != 'components':
+                    options.append(entry)
+                    continue
+                if any(name == prefix or name.startswith(prefix + '.')
+                       for prefix in ('trac', 'tracopt')):
+                    options.append(entry)
+                    continue
+                options.append((section, name, 'disabled'))
+                plugins.append(entry)
+
+        # create an environment without plugins
         env = Environment(env_path, create=True, options=options)
+        for section, name, value in plugins:
+            env.config.set(section, name, value)
+        env.config.save()
+        # create tables for plugins to upgrade
+        env = Environment(env_path)
         env.upgrade()
-        env.config.save()  # remove comments
-        return env
+        return Environment(env_path)  # to be probably safe
 
     def _copy_tables(self, src_db, dst_db, src_dburi, dburi, inplace=False):
         self._printout('Copying tables:')
