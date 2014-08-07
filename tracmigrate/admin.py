@@ -9,10 +9,14 @@ from tempfile import mkdtemp
 
 from trac.core import Component, implements, TracError
 from trac.admin.api import IAdminCommandProvider, get_dir_list
-from trac.db.api import get_column_names, _parse_db_str
+from trac.db.api import DatabaseManager, get_column_names, _parse_db_str
 from trac.env import Environment
 from trac.util.compat import any
 from trac.util.text import printerr, printout
+
+
+def get_connection(env):
+    return DatabaseManager(env).get_connection()
 
 
 class TracMigrationCommand(Component):
@@ -43,8 +47,8 @@ class TracMigrationCommand(Component):
 
         env = self._create_env(env_path, dburi)
         src_dburi = self.config.get('trac', 'database')
-        src_db = self.env.get_read_db()
-        dst_db = env.get_db_cnx()
+        src_db = get_connection(self.env)
+        dst_db = get_connection(env)
         self._copy_tables(src_db, dst_db, src_dburi, dburi)
         self._copy_directories(src_db, env)
 
