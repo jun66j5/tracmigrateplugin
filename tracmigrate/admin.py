@@ -257,7 +257,7 @@ class TracMigrationCommand(Component):
         return []
 
     def _get_directories(self, db):
-        version = self.env.get_version(db=db)
+        version = self.env.get_version()
         path = ('attachments', 'files')[version >= 28]
         return (path, 'htdocs', 'templates', 'plugins')
 
