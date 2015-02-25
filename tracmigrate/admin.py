@@ -45,12 +45,14 @@ class TracMigrationCommand(Component):
                            env_path)
             return 1
 
-        env = self._create_env(env_path, dburi)
+        dst_env = self._create_env(env_path, dburi)
         src_dburi = self.config.get('trac', 'database')
         src_db = get_connection(self.env)
-        dst_db = get_connection(env)
+        if src_dburi.startswith('sqlite:'):
+            src_db.cnx._eager = False  # avoid uses of eagar cursor
+        dst_db = get_connection(dst_env)
         self._copy_tables(src_db, dst_db, src_dburi, dburi)
-        self._copy_directories(src_db, env)
+        self._copy_directories(src_db, dst_env)
 
     def _do_migrate_inplace(self, dburi):
         src_dburi = self.config.get('trac', 'database')
@@ -62,14 +64,14 @@ class TracMigrationCommand(Component):
         env_path = mkdtemp(prefix='migrate-',
                            dir=os.path.dirname(self.env.path))
         try:
-            env = self._create_env(env_path, dburi)
+            dst_env = self._create_env(env_path, dburi)
             src_db = self.env.get_read_db()
-            dst_db = env.get_db_cnx()
+            dst_db = dst_env.get_db_cnx()
             self._copy_tables(src_db, dst_db, src_dburi, dburi, inplace=True)
             del src_db
             del dst_db
-            env.shutdown()
-            env = None
+            dst_env.shutdown()
+            dst_env = None
             if dburi.startswith('sqlite:'):
                 schema, params = _parse_db_str(dburi)
                 shutil.copy(os.path.join(env_path, params['path']),
@@ -129,14 +131,18 @@ class TracMigrationCommand(Component):
         progress = self._isatty()
         replace_cast = self._get_replace_cast(src_db, dst_db, src_dburi, dburi)
 
+        # speed-up copying data with SQLite database
+        if dburi.startswith('sqlite:'):
+            cursor.execute('PRAGMA synchronous = OFF')
+
         @self._with_transaction(dst_db)
         def copy(db):
+            if db is src_db:
+                raise AssertionError('db is src_db')
+            if db is not dst_db:
+                raise AssertionError('db is not dst_db')
+            cursor = db.cursor()
             for table in sorted(tables):
-                if db is src_db:
-                    raise AssertionError('db is src_db')
-                if db is not dst_db:
-                    raise AssertionError('db is not dst_db')
-                cursor = db.cursor()
                 self._printout('  %s table... ', table, newline=False)
                 if table == 'system' and not inplace:
                     src_cursor.execute("SELECT value FROM system "
