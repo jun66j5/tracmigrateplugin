@@ -255,9 +255,13 @@ class TracMigrationCommand(Component):
     def _get_sequences(self, dburi, cursor, tables):
         if dburi.startswith('postgres:'):
             tables = set(tables)
-            cursor.execute(
-                r"SELECT relname FROM pg_class "
-                r"WHERE relkind='S' AND relname LIKE '%\_id\_seq'")
+            cursor.execute("""\
+                SELECT c.relname
+                FROM pg_class c
+                INNER JOIN pg_namespace n ON c.relnamespace = n.oid
+                WHERE n.nspname = ANY (current_schemas(false))
+                AND c.relkind='S' AND c.relname LIKE %s ESCAPE '!'
+                """, ('%!_id!_seq',))
             seqs = [name[:-len('_id_seq')] for name, in cursor]
             return sorted(name for name in seqs if name in tables)
         return []
