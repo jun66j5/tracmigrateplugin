@@ -48,8 +48,6 @@ class TracMigrationCommand(Component):
         dst_env = self._create_env(env_path, dburi)
         src_dburi = self.config.get('trac', 'database')
         src_db = get_connection(self.env)
-        if src_dburi.startswith('sqlite:'):
-            src_db.cnx._eager = False  # avoid uses of eagar cursor
         dst_db = get_connection(dst_env)
         self._copy_tables(src_db, dst_db, src_dburi, dburi)
         self._copy_directories(src_db, dst_env)
@@ -65,8 +63,8 @@ class TracMigrationCommand(Component):
                            dir=os.path.dirname(self.env.path))
         try:
             dst_env = self._create_env(env_path, dburi)
-            src_db = self.env.get_read_db()
-            dst_db = dst_env.get_db_cnx()
+            src_db = get_connection(self.env)
+            dst_db = get_connection(dst_env)
             self._copy_tables(src_db, dst_db, src_dburi, dburi, inplace=True)
             del src_db
             del dst_db
@@ -123,7 +121,14 @@ class TracMigrationCommand(Component):
     def _copy_tables(self, src_db, dst_db, src_dburi, dburi, inplace=False):
         self._printout('Copying tables:')
 
+        if src_dburi.startswith('sqlite:'):
+            src_db.cnx._eager = False  # avoid uses of eagar cursor
         src_cursor = src_db.cursor()
+        if src_dburi.startswith('sqlite:'):
+            from trac.db.sqlite_backend import PyFormatCursor
+            if type(src_cursor.cursor) is not PyFormatCursor:
+                raise AssertionError('src_cursor.cursor is %r' %
+                                     src_cursor.cursor)
         src_tables = set(self._get_tables(src_dburi, src_cursor))
         cursor = dst_db.cursor()
         tables = set(self._get_tables(dburi, cursor)) & src_tables
