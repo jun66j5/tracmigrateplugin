@@ -9,6 +9,7 @@ from tempfile import mkdtemp
 
 from trac.core import Component, implements, TracError
 from trac.admin.api import IAdminCommandProvider, get_dir_list
+from trac.db import sqlite_backend
 from trac.db.api import DatabaseManager, get_column_names, _parse_db_str
 from trac.env import Environment
 from trac.util.compat import any
@@ -72,8 +73,11 @@ class TracMigrationCommand(Component):
             dst_env = None
             if dburi.startswith('sqlite:'):
                 schema, params = _parse_db_str(dburi)
-                shutil.copy(os.path.join(env_path, params['path']),
-                            os.path.join(self.env.path, params['path']))
+                dbpath = os.path.join(self.env.path, params['path'])
+                dbdir = os.path.dirname(dbpath)
+                if not os.path.isdir(dbdir):
+                    os.makedirs(dbdir)
+                shutil.copy(os.path.join(env_path, params['path']), dbpath)
         finally:
             shutil.rmtree(env_path)
 
@@ -125,8 +129,7 @@ class TracMigrationCommand(Component):
             src_db.cnx._eager = False  # avoid uses of eagar cursor
         src_cursor = src_db.cursor()
         if src_dburi.startswith('sqlite:'):
-            from trac.db.sqlite_backend import PyFormatCursor
-            if type(src_cursor.cursor) is not PyFormatCursor:
+            if type(src_cursor.cursor) is not sqlite_backend.PyFormatCursor:
                 raise AssertionError('src_cursor.cursor is %r' %
                                      src_cursor.cursor)
         src_tables = set(self._get_tables(src_dburi, src_cursor))
@@ -139,46 +142,63 @@ class TracMigrationCommand(Component):
         # speed-up copying data with SQLite database
         if dburi.startswith('sqlite:'):
             cursor.execute('PRAGMA synchronous = OFF')
+            multirows_insert = sqlite_backend.sqlite_version >= (3, 7, 11)
+            max_paramters = 999
+        else:
+            multirows_insert = True
+            max_paramters = None
 
-        @self._with_transaction(dst_db)
-        def copy(db):
-            if db is src_db:
-                raise AssertionError('db is src_db')
-            if db is not dst_db:
-                raise AssertionError('db is not dst_db')
-            cursor = db.cursor()
+        def copy_table(db, cursor, table):
+            src_cursor.execute('SELECT * FROM ' + src_db.quote(table))
+            columns = get_column_names(src_cursor)
+            n_rows = 100
+            if multirows_insert and max_paramters:
+                n_rows = min(n_rows, int(max_paramters // len(columns)))
+            quoted_table = db.quote(table)
+            holders = '(%s)' % ','.join(['%s'] * len(columns))
+            count = 0
+
+            cursor.execute('DELETE FROM ' + quoted_table)
+            while True:
+                rows = src_cursor.fetchmany(n_rows)
+                if not rows:
+                    break
+                count += len(rows)
+                if progress:
+                    self._printout('%d records\r  %s table... ',
+                                   count, table, newline=False)
+                if replace_cast is not None and table == 'report':
+                    rows = self._replace_report_query(rows, columns,
+                                                      replace_cast)
+                query = 'INSERT INTO %s (%s) VALUES ' % \
+                        (quoted_table, ','.join(map(db.quote, columns)))
+                if multirows_insert:
+                    cursor.execute(query + ','.join([holders] * len(rows)),
+                                   sum(rows, ()))
+                else:
+                    cursor.executemany(query + holders, rows)
+
+            if table == 'system' and not inplace:
+                src_cursor.execute("SELECT value FROM system "
+                                   "WHERE name='initial_database_version'")
+                row = src_cursor.fetchone()
+                cursor.execute("UPDATE system SET value=%s WHERE "
+                               "name='initial_database_version'", row)
+
+            return count
+
+        try:
+            cursor = dst_db.cursor()
             for table in sorted(tables):
                 self._printout('  %s table... ', table, newline=False)
-                if table == 'system' and not inplace:
-                    src_cursor.execute("SELECT value FROM system "
-                                       "WHERE name='initial_database_version'")
-                    row = src_cursor.fetchone()
-                    cursor.execute("UPDATE system SET value=%s WHERE "
-                                   "name='initial_database_version'", row)
-                    self._printout("copied 'initial_database_version' value.")
-                    continue
-                src_cursor.execute('SELECT * FROM ' + src_db.quote(table))
-                columns = get_column_names(src_cursor)
-                query = 'INSERT INTO ' + db.quote(table) + \
-                        ' (' + ','.join(map(db.quote, columns)) + ')' + \
-                        ' VALUES (' + ','.join(['%s'] * len(columns)) + ')'
-                cursor.execute('DELETE FROM ' + db.quote(table))
-                count = 0
-                while True:
-                    rows = src_cursor.fetchmany(100)
-                    if not rows:
-                        break
-                    count += len(rows)
-                    if progress:
-                        self._printout('%d records.\r  %s table... ',
-                                       count, table, newline=False)
-                    if replace_cast is not None and table == 'report':
-                        rows = self._replace_report_query(rows, columns,
-                                                          replace_cast)
-                    cursor.executemany(query, rows)
+                count = copy_table(dst_db, cursor, table)
                 self._printout('%d records.', count)
             for table in tables & sequences:
-                db.update_sequence(cursor, table)
+                dst_db.update_sequence(cursor, table)
+            dst_db.commit()
+        except:
+            dst_db.rollback()
+            raise
 
     def _get_replace_cast(self, src_db, dst_db, src_dburi, dst_dburi):
         if src_dburi.split(':', 1) == dst_dburi.split(':', 1):
@@ -223,18 +243,8 @@ class TracMigrationCommand(Component):
         def replace(row):
             row = list(row)
             row[idx] = replace_cast(row[idx])
-            return row
+            return tuple(row)
         return [replace(row) for row in rows]
-
-    def _with_transaction(self, db):
-        def wrapper(fn):
-            try:
-                fn(db)
-                db.commit()
-            except:
-                db.rollback()
-                raise
-        return wrapper
 
     def _complete_migrate(self, args):
         if len(args) == 1:
