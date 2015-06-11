@@ -178,13 +178,6 @@ class TracMigrationCommand(Component):
                 else:
                     cursor.executemany(query + holders, rows)
 
-            if table == 'system' and not inplace:
-                src_cursor.execute("SELECT value FROM system "
-                                   "WHERE name='initial_database_version'")
-                row = src_cursor.fetchone()
-                cursor.execute("UPDATE system SET value=%s WHERE "
-                               "name='initial_database_version'", row)
-
             return count
 
         try:
