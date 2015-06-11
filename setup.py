@@ -15,6 +15,7 @@ setup(
     author_email = 'jun66j5@gmail.com',
     install_requires = ['Trac >= 0.12'],
     packages = find_packages(exclude=['*.tests*']),
+    test_suite = 'tracmigrate.tests.suite',
     entry_points = {
         'trac.plugins': [
             'tracmigrate.admin = tracmigrate.admin',
