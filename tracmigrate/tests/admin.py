@@ -69,7 +69,7 @@ class MigrationTestCase(unittest.TestCase):
 
     if 'destroying' in inspect.getargspec(EnvironmentStub.__init__)[0]:
         def _destroy_db(self):
-            EnvironmentStub(destroying=True)
+            EnvironmentStub(destroying=True).destroy_db()
     else:
         def _destroy_db(self):
             EnvironmentStub().destroy_db()
