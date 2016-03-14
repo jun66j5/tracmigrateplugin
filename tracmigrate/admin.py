@@ -24,11 +24,17 @@ class TracMigrationCommand(Component):
 
     implements(IAdminCommandProvider)
 
+    _help = """\
+    Migrate to another database
+
+    This command migrates to another database in new Trac Environment or this
+    Trac Environment in-place. The new Trac Environment is specified in the
+    <tracenv>. If -i/--in-place option is specified, in-place migration.
+    Another database is specified in the <dburi> and must be empty."""
+
     def get_admin_commands(self):
         yield ('migrate', '<tracenv|-i|--in-place> <dburi>',
-               'Migrate to new environment with another database or another '
-               'database without creating a new environment.',
-               self._complete_migrate, self._do_migrate)
+               self._help, self._complete_migrate, self._do_migrate)
 
     def _do_migrate(self, env_path, dburi):
         if env_path in ('-i', '--in-place'):
