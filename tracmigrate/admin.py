@@ -105,7 +105,7 @@ class TracMigrationCommand(Component):
         plugins = []
         for section in self.config.sections():
             for name, value in self.config.options(section):
-                if section == 'trac' or name == 'database':
+                if section == 'trac' and name == 'database':
                     continue
                 entry = (section, name, value)
                 if section != 'components':

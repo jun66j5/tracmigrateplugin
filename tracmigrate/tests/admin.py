@@ -11,10 +11,12 @@ import unittest
 
 from trac import db_default
 from trac.attachment import Attachment
-from trac.db.api import DatabaseManager, get_column_names
+from trac.config import Option
+from trac.db.api import get_column_names
 from trac.env import Environment
 from trac.test import EnvironmentStub, get_dburi
 from trac.util import read_file
+from trac.util.text import to_unicode
 from trac.wiki.admin import WikiAdmin
 
 from tracmigrate.admin import TracMigrationCommand
@@ -55,7 +57,9 @@ class MigrationTestCase(unittest.TestCase):
         shutil.rmtree(self.path)
 
     def _create_env(self, path, dburi):
-        env = Environment(path, True, [('trac', 'database', dburi)])
+        env = Environment(path, True,
+                          [('trac', 'database', dburi),
+                           ('trac', 'base_url', 'http://localhost/')])
         @env.with_transaction()
         def fn(db):
             cursor = db.cursor()
@@ -112,6 +116,42 @@ class MigrationTestCase(unittest.TestCase):
             else:
                 self.assertEqual(expected[name], actual[name])
 
+    def _get_options(self, env):
+        config = env.config
+        return [(section, name, self._option_dumps(section, name, value))
+                for section in sorted(config.sections())
+                for name, value in sorted(config.options(section))
+                if not (section == 'trac' and name == 'database')]
+
+    if hasattr(Option, 'dumps'):
+        def _option_dumps(self, section, name, value):
+            try:
+                option = Option.registry[(section, name)]
+                value = option.dumps(value)
+            except KeyError:
+                pass
+            return value
+    else:
+        def _option_dumps(self, section, name, value):
+            def dumps(value, option=None):
+                if value is None:
+                    return ''
+                if value is True:
+                    return 'enabled'
+                if value is False:
+                    return 'disabled'
+                if isinstance(value, unicode):
+                    return value
+                if isinstance(value, (list, tuple)) and hasattr(option, 'sep'):
+                    return option.sep.join(dumps(v) for v in value)
+                return to_unicode(value)
+            try:
+                option = Option.registry[(section, name)]
+                value = dumps(value, option=option)
+            except KeyError:
+                pass
+            return value
+
     def test_migrate_from_sqlite_to_env(self):
         self._create_env(self.src_path, 'sqlite:db/trac.db')
         dburi = get_dburi()
@@ -119,13 +159,16 @@ class MigrationTestCase(unittest.TestCase):
             dburi = 'sqlite:db/trac.db'
 
         self.src_env = Environment(self.src_path)
+        src_options = self._get_options(self.src_env)
         src_records = self._get_all_records(self.src_env)
         self._migrate(self.src_env, self.dst_path, dburi)
         self.dst_env = Environment(self.dst_path)
+        dst_options = self._get_options(self.dst_env)
         dst_records = self._get_all_records(self.dst_env)
         self.assertEqual({'name': 'initial_database_version', 'value': '21'},
                          dst_records['system']['initial_database_version'])
         self._compare_records(src_records, dst_records)
+        self.assertEqual(src_options, dst_options)
         att = Attachment(self.dst_env, 'wiki', 'WikiStart', 'filename.txt')
         self.assertEqual('test', read_file(att.path))
 
@@ -136,14 +179,17 @@ class MigrationTestCase(unittest.TestCase):
             dburi = 'sqlite:db/trac-migrate.db'
 
         self.src_env = Environment(self.src_path)
+        src_options = self._get_options(self.src_env)
         src_records = self._get_all_records(self.src_env)
         self._migrate_inplace(self.src_env, dburi)
         self.src_env.shutdown()
         self.src_env = Environment(self.src_path)
+        dst_options = self._get_options(self.src_env)
         dst_records = self._get_all_records(self.src_env)
         self.assertEqual({'name': 'initial_database_version', 'value': '21'},
                          dst_records['system']['initial_database_version'])
         self._compare_records(src_records, dst_records)
+        self.assertEqual(src_options, dst_options)
 
     def test_migrate_to_sqlite_env(self):
         dburi = get_dburi()
@@ -152,13 +198,16 @@ class MigrationTestCase(unittest.TestCase):
         self._create_env(self.src_path, dburi)
 
         self.src_env = Environment(self.src_path)
+        src_options = self._get_options(self.src_env)
         src_records = self._get_all_records(self.src_env)
         self._migrate(self.src_env, self.dst_path, 'sqlite:db/trac.db')
         self.dst_env = Environment(self.dst_path)
+        dst_options = self._get_options(self.dst_env)
         dst_records = self._get_all_records(self.dst_env)
         self.assertEqual({'name': 'initial_database_version', 'value': '21'},
                          dst_records['system']['initial_database_version'])
         self._compare_records(src_records, dst_records)
+        self.assertEqual(src_options, dst_options)
         att = Attachment(self.dst_env, 'wiki', 'WikiStart', 'filename.txt')
         self.assertEqual('test', read_file(att.path))
 
@@ -169,14 +218,17 @@ class MigrationTestCase(unittest.TestCase):
         self._create_env(self.src_path, dburi)
 
         self.src_env = Environment(self.src_path)
+        src_options = self._get_options(self.src_env)
         src_records = self._get_all_records(self.src_env)
         self._migrate_inplace(self.src_env, 'sqlite:db/trac.db')
         self.src_env.shutdown()
         self.src_env = Environment(self.src_path)
+        dst_options = self._get_options(self.src_env)
         dst_records = self._get_all_records(self.src_env)
         self.assertEqual({'name': 'initial_database_version', 'value': '21'},
                          dst_records['system']['initial_database_version'])
         self._compare_records(src_records, dst_records)
+        self.assertEqual(src_options, dst_options)
 
 
 def suite():
