@@ -15,7 +15,7 @@ from trac.config import Option
 from trac.db.api import get_column_names
 from trac.env import Environment
 from trac.test import EnvironmentStub, get_dburi
-from trac.util import read_file
+from trac.util import create_file, read_file
 from trac.util.text import to_unicode
 from trac.wiki.admin import WikiAdmin
 
@@ -59,7 +59,8 @@ class MigrationTestCase(unittest.TestCase):
     def _create_env(self, path, dburi):
         env = Environment(path, True,
                           [('trac', 'database', dburi),
-                           ('trac', 'base_url', 'http://localhost/')])
+                           ('trac', 'base_url', 'http://localhost/'),
+                           ('project', 'name', u'Pŕójéćŧ Ńáḿé')])
         @env.with_transaction()
         def fn(db):
             cursor = db.cursor()
@@ -229,6 +230,64 @@ class MigrationTestCase(unittest.TestCase):
                          dst_records['system']['initial_database_version'])
         self._compare_records(src_records, dst_records)
         self.assertEqual(src_options, dst_options)
+
+    _plugin_source = """\
+import os.path
+from trac.core import Component, implements
+from trac.env import IEnvironmentSetupParticipant
+from trac.util import create_file
+
+class Setup(Component):
+
+    implements(IEnvironmentSetupParticipant)
+
+    def __init__(self):
+        self._created_file = os.path.join(self.env.path, 'log', 'created')
+        self._upgraded_file = os.path.join(self.env.path, 'log', 'upgraded')
+
+    def environment_created(self):
+        create_file(self._created_file)
+
+    def environment_needs_upgrade(self, db):
+        return not os.path.exists(self._upgraded_file)
+
+    def upgrade_environment(self, db):
+        create_file(self._upgraded_file)
+"""
+
+    def test_migrate_with_plugins_to_sqlite_env(self):
+        dburi = get_dburi()
+        if dburi == 'sqlite::memory:':
+            dburi = 'sqlite:db/trac.db'
+        self._create_env(self.src_path, dburi)
+        create_file(os.path.join(self.src_path, 'plugins',
+                                 'tracmigrate_plugin.py'),
+                    self._plugin_source)
+
+        self.src_env = Environment(self.src_path)
+        self.assertTrue(self.src_env.needs_upgrade())
+        self.src_env.upgrade()
+        self.assertFalse(self.src_env.needs_upgrade())
+        src_options = self._get_options(self.src_env)
+        src_records = self._get_all_records(self.src_env)
+
+        self._migrate(self.src_env, self.dst_path, 'sqlite:db/trac.db')
+        self.assertTrue(os.path.exists(os.path.join(self.dst_path, 'plugins',
+                                                    'tracmigrate_plugin.py')))
+        self.dst_env = Environment(self.dst_path)
+        self.assertFalse(self.dst_env.needs_upgrade())
+        self.assertFalse(os.path.exists(os.path.join(self.dst_path, 'log',
+                                                     'created')))
+        self.assertTrue(os.path.exists(os.path.join(self.dst_path, 'log',
+                                                    'upgraded')))
+        dst_options = self._get_options(self.dst_env)
+        dst_records = self._get_all_records(self.dst_env)
+        self.assertEqual({'name': 'initial_database_version', 'value': '21'},
+                         dst_records['system']['initial_database_version'])
+        self._compare_records(src_records, dst_records)
+        self.assertEqual(src_options, dst_options)
+        att = Attachment(self.dst_env, 'wiki', 'WikiStart', 'filename.txt')
+        self.assertEqual('test', read_file(att.path))
 
 
 def suite():
