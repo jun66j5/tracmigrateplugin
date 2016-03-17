@@ -23,6 +23,9 @@ def get_connection(env):
 
 class MigrateEnvironment(Environment):
 
+    abstract = True  # avoid showing in plugins admin page
+    required = False
+
     def is_component_enabled(self, cls):
         name = self._component_name(cls)
         if not any(name.startswith(mod) for mod in ('trac.', 'tracopt.')):
