@@ -6,6 +6,7 @@ import shutil
 import sys
 import time
 from ConfigParser import RawConfigParser
+from subprocess import PIPE, Popen
 from tempfile import mkdtemp
 
 from trac.core import Component, implements, TracError
@@ -13,7 +14,7 @@ from trac.admin.api import IAdminCommandProvider, get_dir_list
 from trac.db import sqlite_backend
 from trac.db.api import DatabaseManager, get_column_names, _parse_db_str
 from trac.env import Environment
-from trac.util.compat import any
+from trac.util.compat import any, close_fds
 from trac.util.text import printerr, printout
 
 
@@ -130,13 +131,21 @@ class TracMigrationCommand(Component):
         os.rmdir(os.path.join(env_path, 'plugins'))
         shutil.copytree(os.path.join(self.env.path, 'plugins'),
                         os.path.join(env_path, 'plugins'))
-        # create tables for plugins to upgrade
-        env = Environment(env_path)
-        if env.needs_upgrade():
-            env.upgrade()
-            env.shutdown()
-            env = Environment(env_path)  # to be probably safe
-        return env
+        # create tables for plugins to upgrade in out-process
+        # (if Python is 2.5+, it can use "-m trac.admin.console" simply)
+        tracadmin = """\
+import sys; \
+from pkg_resources import load_entry_point; \
+sys.exit(load_entry_point('Trac', 'console_scripts', 'trac-admin')())"""
+        proc = Popen((sys.executable, '-c', tracadmin, env_path, 'upgrade'),
+                     stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=close_fds)
+        stdout, stderr = proc.communicate(input='')
+        for f in (proc.stdin, proc.stdout, proc.stderr):
+            f.close()
+        if proc.returncode != 0:
+            raise TracError("upgrade command failed (stdout %r, stderr %r)" %
+                            (stdout, stderr))
+        return Environment(env_path)
 
     def _copy_tables(self, src_db, dst_db, src_dburi, dburi, inplace=False):
         self._printout('Copying tables:')
