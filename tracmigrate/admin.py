@@ -5,6 +5,8 @@ import re
 import shutil
 import sys
 import time
+from ConfigParser import RawConfigParser
+from subprocess import PIPE, Popen
 from tempfile import mkdtemp
 
 from trac.core import Component, implements, TracError
@@ -12,12 +14,24 @@ from trac.admin.api import IAdminCommandProvider, get_dir_list
 from trac.db import sqlite_backend
 from trac.db.api import DatabaseManager, get_column_names, _parse_db_str
 from trac.env import Environment
-from trac.util.compat import any
+from trac.util.compat import any, close_fds
 from trac.util.text import printerr, printout
 
 
 def get_connection(env):
     return DatabaseManager(env).get_connection()
+
+
+class MigrateEnvironment(Environment):
+
+    abstract = True  # avoid showing in plugins admin page
+    required = False
+
+    def is_component_enabled(self, cls):
+        name = self._component_name(cls)
+        if not any(name.startswith(mod) for mod in ('trac.', 'tracopt.')):
+            return False
+        return Environment.is_component_enabled(self, cls)
 
 
 class TracMigrationCommand(Component):
@@ -101,32 +115,37 @@ class TracMigrationCommand(Component):
                        basename(dst), dir)
 
     def _create_env(self, env_path, dburi):
-        options = [('trac', 'database', dburi)]
-        plugins = []
-        for section in self.config.sections():
-            for name, value in self.config.options(section):
-                if section == 'trac' and name == 'database':
-                    continue
-                entry = (section, name, value)
-                if section != 'components':
-                    options.append(entry)
-                    continue
-                if any(name == prefix or name.startswith(prefix + '.')
-                       for prefix in ('trac', 'tracopt')):
-                    options.append(entry)
-                    continue
-                options.append((section, name, 'disabled'))
-                plugins.append(entry)
+        parser = RawConfigParser()
+        parser.read([os.path.join(self.env.path, 'conf', 'trac.ini')])
+        options = dict(((section, name), value)
+                       for section in parser.sections()
+                       for name, value in parser.items(section))
+        options[('trac', 'database')] = dburi
+        options = sorted((section, name, value) for (section, name), value
+                                                in options.iteritems())
 
         # create an environment without plugins
-        env = Environment(env_path, create=True, options=options)
-        for section, name, value in plugins:
-            env.config.set(section, name, value)
-        env.config.save()
-        # create tables for plugins to upgrade
-        env = Environment(env_path)
-        env.upgrade()
-        return Environment(env_path)  # to be probably safe
+        env = MigrateEnvironment(env_path, create=True, options=options)
+        env.shutdown()
+        # copy plugins directory
+        os.rmdir(os.path.join(env_path, 'plugins'))
+        shutil.copytree(os.path.join(self.env.path, 'plugins'),
+                        os.path.join(env_path, 'plugins'))
+        # create tables for plugins to upgrade in out-process
+        # (if Python is 2.5+, it can use "-m trac.admin.console" simply)
+        tracadmin = """\
+import sys; \
+from pkg_resources import load_entry_point; \
+sys.exit(load_entry_point('Trac', 'console_scripts', 'trac-admin')())"""
+        proc = Popen((sys.executable, '-c', tracadmin, env_path, 'upgrade'),
+                     stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=close_fds)
+        stdout, stderr = proc.communicate(input='')
+        for f in (proc.stdin, proc.stdout, proc.stderr):
+            f.close()
+        if proc.returncode != 0:
+            raise TracError("upgrade command failed (stdout %r, stderr %r)" %
+                            (stdout, stderr))
+        return Environment(env_path)
 
     def _copy_tables(self, src_db, dst_db, src_dburi, dburi, inplace=False):
         self._printout('Copying tables:')

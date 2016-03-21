@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 
 from cStringIO import StringIO
+from glob import glob
 from pkg_resources import resource_filename
+from subprocess import PIPE, Popen
+from zipfile import ZipFile
 import inspect
 import os
 import shutil
@@ -15,7 +18,8 @@ from trac.config import Option
 from trac.db.api import get_column_names
 from trac.env import Environment
 from trac.test import EnvironmentStub, get_dburi
-from trac.util import read_file
+from trac.util import create_file, hex_entropy, read_file
+from trac.util.compat import close_fds
 from trac.util.text import to_unicode
 from trac.wiki.admin import WikiAdmin
 
@@ -59,7 +63,8 @@ class MigrationTestCase(unittest.TestCase):
     def _create_env(self, path, dburi):
         env = Environment(path, True,
                           [('trac', 'database', dburi),
-                           ('trac', 'base_url', 'http://localhost/')])
+                           ('trac', 'base_url', 'http://localhost/'),
+                           ('project', 'name', u'Pŕójéćŧ Ńáḿé')])
         @env.with_transaction()
         def fn(db):
             cursor = db.cursor()
@@ -100,6 +105,26 @@ class MigrationTestCase(unittest.TestCase):
                 rows[primary(row, table.key)] = row
             records[table.name] = rows
         return records
+
+    def _generate_module_name(self):
+        return 'tracmigratetest_' + hex_entropy(16)
+
+    def _build_egg_file(self):
+        module_name = self._generate_module_name()
+        plugin_src = os.path.join(self.path, 'plugin_src')
+        os.mkdir(plugin_src)
+        os.mkdir(os.path.join(plugin_src, module_name))
+        create_file(os.path.join(plugin_src, 'setup.py'),
+                    _setup_py % {'name': module_name})
+        create_file(os.path.join(plugin_src, module_name, '__init__.py'),
+                    _plugin_py)
+        proc = Popen((sys.executable, 'setup.py', 'bdist_egg'), cwd=plugin_src,
+                     stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=close_fds)
+        stdout, stderr = proc.communicate(input='')
+        for f in (proc.stdin, proc.stdout, proc.stderr):
+            f.close()
+        for filename in glob(os.path.join(plugin_src, 'dist', '*-*.egg')):
+            return filename
 
     def _migrate(self, env, path, dburi):
         TracMigrationCommand(env)._do_migrate(path, dburi)
@@ -229,6 +254,105 @@ class MigrationTestCase(unittest.TestCase):
                          dst_records['system']['initial_database_version'])
         self._compare_records(src_records, dst_records)
         self.assertEqual(src_options, dst_options)
+
+    def _test_migrate_with_plugin_to_sqlite_env(self):
+        self.src_env = Environment(self.src_path)
+        self.assertTrue(self.src_env.needs_upgrade())
+        self.src_env.upgrade()
+        self.assertFalse(self.src_env.needs_upgrade())
+        src_options = self._get_options(self.src_env)
+        src_records = self._get_all_records(self.src_env)
+
+        self._migrate(self.src_env, self.dst_path, 'sqlite:db/trac.db')
+        self.dst_env = Environment(self.dst_path)
+        self.assertFalse(self.dst_env.needs_upgrade())
+        self.assertFalse(os.path.exists(os.path.join(self.dst_path, 'log',
+                                                     'created')))
+        self.assertTrue(os.path.exists(os.path.join(self.dst_path, 'log',
+                                                    'upgraded')))
+        dst_options = self._get_options(self.dst_env)
+        dst_records = self._get_all_records(self.dst_env)
+        self.assertEqual({'name': 'initial_database_version', 'value': '21'},
+                         dst_records['system']['initial_database_version'])
+        self._compare_records(src_records, dst_records)
+        self.assertEqual(src_options, dst_options)
+        att = Attachment(self.dst_env, 'wiki', 'WikiStart', 'filename.txt')
+        self.assertEqual('test', read_file(att.path))
+
+    def test_migrate_with_plugin_py_to_sqlite_env(self):
+        dburi = get_dburi()
+        if dburi == 'sqlite::memory:':
+            dburi = 'sqlite:db/trac.db'
+        self._create_env(self.src_path, dburi)
+        plugin_name = self._generate_module_name() + '.py'
+        create_file(os.path.join(self.src_path, 'plugins', plugin_name),
+                    _plugin_py)
+        self._test_migrate_with_plugin_to_sqlite_env()
+
+    def _extract_zipfile(self, zipfile, destdir):
+        z = ZipFile(zipfile)
+        try:
+            for entry in z.namelist():
+                if entry.endswith('/'):  # is a directory
+                    continue
+                names = entry.split('/')
+                content = z.read(entry)
+                filename = os.path.join(destdir, *names)
+                dirname = os.path.dirname(filename)
+                if not os.path.isdir(dirname):
+                    os.makedirs(dirname)
+                create_file(filename, content, 'wb')
+        finally:
+            z.close()
+
+    def test_migrate_with_plugin_egg_to_sqlite_env(self):
+        dburi = get_dburi()
+        if dburi == 'sqlite::memory:':
+            dburi = 'sqlite:db/trac.db'
+        self._create_env(self.src_path, dburi)
+        self._extract_zipfile(self._build_egg_file(),
+                              os.path.join(self.src_path, 'plugins',
+                                           'tracmigratetest.egg'))
+        self._test_migrate_with_plugin_to_sqlite_env()
+
+
+_setup_py = """\
+from setuptools import setup, find_packages
+
+setup(
+    name = '%(name)s',
+    version = '0.1.0',
+    description = '',
+    license = '',
+    install_requires = ['Trac'],
+    packages = find_packages(exclude=['*.tests*']),
+    entry_points = {'trac.plugins': ['%(name)s = %(name)s']})
+"""
+
+
+_plugin_py = """\
+import os.path
+from trac.core import Component, implements
+from trac.env import IEnvironmentSetupParticipant
+from trac.util import create_file
+
+class Setup(Component):
+
+    implements(IEnvironmentSetupParticipant)
+
+    def __init__(self):
+        self._created_file = os.path.join(self.env.path, 'log', 'created')
+        self._upgraded_file = os.path.join(self.env.path, 'log', 'upgraded')
+
+    def environment_created(self):
+        create_file(self._created_file)
+
+    def environment_needs_upgrade(self, db):
+        return not os.path.exists(self._upgraded_file)
+
+    def upgrade_environment(self, db):
+        create_file(self._upgraded_file)
+"""
 
 
 def suite():
